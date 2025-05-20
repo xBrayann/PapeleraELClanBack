@@ -1,0 +1,11 @@
+# Ignorar archivos de credenciales
+firebase-credentials.json
+
+# Ignorar archivos generados por el IDE
+.vscode/
+.idea/
+
+# Ignorar dependencias y builds
+bin/
+obj/
+node_modules/
