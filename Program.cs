@@ -11,6 +11,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSingleton<FirebaseService>();
 
+/*
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -25,6 +26,20 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes("tu-clave-secreta"))  // Usar la misma clave secreta que al generar el JWT
         };
     });
+
+// Agregar política para permitir acceso anónimo a create_preference
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("AllowMercadoPago", policy =>
+    {
+        policy.RequireAssertion(context =>
+            context.Resource is Microsoft.AspNetCore.Http.HttpContext httpContext &&
+            httpContext.Request.Path.StartsWithSegments("/api/mercadopago/create_preference")
+            || context.User.Identity != null && context.User.Identity.IsAuthenticated
+        );
+    });
+});
+*/
 
 builder.Services.AddCors(options =>
 {
@@ -63,7 +78,12 @@ app.UseCors("AllowFrontend");
 
 app.UseHttpsRedirection();
 
-app.UseAuthentication();
+app.UseWhen(context => !context.Request.Path.StartsWithSegments("/api/mercadopago/create_preference"), appBuilder =>
+{
+    appBuilder.UseAuthentication();
+    appBuilder.UseAuthorization();
+});
+
 app.UseAuthorization();
 
 app.MapControllers();

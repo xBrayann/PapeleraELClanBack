@@ -51,6 +51,60 @@ namespace PapeleriaApi.Services
             return productos;
         }
 
+        // Métodos para la entidad MetodoPago
+        public async Task<List<MetodoPago>> GetAllMetodosPagoAsync()
+        {
+            var metodosPago = new List<MetodoPago>();
+            var snapshot = await _firestoreDb!.Collection("metodosPago").GetSnapshotAsync();
+            foreach (var document in snapshot.Documents)
+            {
+                var metodoPago = document.ConvertTo<MetodoPago>();
+                metodosPago.Add(metodoPago);
+            }
+            return metodosPago;
+        }
+
+        public async Task<MetodoPago?> GetMetodoPagoByIdAsync(string id)
+        {
+            var document = await _firestoreDb!.Collection("metodosPago").Document(id).GetSnapshotAsync();
+            return document.Exists ? document.ConvertTo<MetodoPago>() : null;
+        }
+
+        public async Task AddMetodoPagoAsync(MetodoPago metodoPago)
+        {
+            var docRef = _firestoreDb!.Collection("metodosPago").Document();
+            metodoPago.Id = docRef.Id;
+            await docRef.SetAsync(metodoPago);
+        }
+
+        public async Task<bool> UpdateMetodoPagoAsync(string id, MetodoPago metodoPago)
+        {
+            var docRef = _firestoreDb!.Collection("metodosPago").Document(id);
+            var snapshot = await docRef.GetSnapshotAsync();
+
+            if (!snapshot.Exists)
+            {
+                return false;
+            }
+
+            await docRef.SetAsync(metodoPago, SetOptions.MergeAll);
+            return true;
+        }
+
+        public async Task<bool> DeleteMetodoPagoAsync(string id)
+        {
+            var docRef = _firestoreDb!.Collection("metodosPago").Document(id);
+            var snapshot = await docRef.GetSnapshotAsync();
+
+            if (!snapshot.Exists)
+            {
+                return false;
+            }
+
+            await docRef.DeleteAsync();
+            return true;
+        }
+
         public async Task<Producto?> GetProductByIdAsync(string id)
         {
             var document = await _firestoreDb!.Collection("productos").Document(id).GetSnapshotAsync();
