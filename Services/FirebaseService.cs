@@ -5,6 +5,7 @@ using Google.Apis.Auth.OAuth2;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 
 namespace PapeleriaApi.Services
 {
@@ -13,10 +14,12 @@ namespace PapeleriaApi.Services
         private static FirestoreDb? _firestoreDb;
 
         private readonly IConfiguration _configuration;
+        private readonly ILogger<FirebaseService> _logger;
 
-        public FirebaseService(IConfiguration configuration)
+        public FirebaseService(IConfiguration configuration, ILogger<FirebaseService> logger)
         {
             _configuration = configuration;
+            _logger = logger;
             
             if (_firestoreDb == null)
             {
@@ -42,11 +45,19 @@ namespace PapeleriaApi.Services
         public async Task<List<Producto>> GetAllProductsAsync()
         {
             var productos = new List<Producto>();
-            var snapshot = await _firestoreDb!.Collection("productos").GetSnapshotAsync();
-            foreach (var document in snapshot.Documents)
+            try
             {
-                var producto = document.ConvertTo<Producto>();
-                productos.Add(producto);
+                var snapshot = await _firestoreDb!.Collection("productos").GetSnapshotAsync();
+                foreach (var document in snapshot.Documents)
+                {
+                    var producto = document.ConvertTo<Producto>();
+                    productos.Add(producto);
+                }
+                _logger.LogInformation("Productos obtenidos correctamente.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al obtener productos.");
             }
             return productos;
         }
@@ -218,8 +229,12 @@ namespace PapeleriaApi.Services
 
         public async Task<Usuario?> GetUsuarioByEmailAsync(string email)
         {
+            if (string.IsNullOrWhiteSpace(email))
+                return null;
+
+            var normalizedEmail = email.ToLower().Trim();
             var query = _firestoreDb!.Collection("usuarios")
-                .WhereEqualTo("Email", email)
+                .WhereEqualTo("Email", normalizedEmail)
                 .Limit(1);
             
             var snapshot = await query.GetSnapshotAsync();

@@ -1,5 +1,6 @@
 using BCrypt.Net;
 using Google.Cloud.Firestore;
+using System.ComponentModel.DataAnnotations;
 
 namespace PapeleriaApi.Models
 {
@@ -10,9 +11,12 @@ namespace PapeleriaApi.Models
         public string? Id { get; set; }
 
         [FirestoreProperty]
+        [Required(ErrorMessage = "El nombre es obligatorio")]
         public string? Nombre { get; set; }
 
         [FirestoreProperty]
+        [Required(ErrorMessage = "El email es obligatorio")]
+        [EmailAddress(ErrorMessage = "El email no es válido")]
         public string? Email { get; set; }
 
         [FirestoreProperty]
@@ -25,6 +29,14 @@ namespace PapeleriaApi.Models
         public string? Rol { get; set; }
 
         [FirestoreProperty]
-        public string? Contrasena { get; set; }  
+        [Required(ErrorMessage = "La contraseña es obligatoria")]
+        [MinLength(8, ErrorMessage = "La contraseña debe tener al menos 8 caracteres")]
+        public string? Contrasena { get; set; }
+
+        [FirestoreProperty]
+        public string? FirebaseUid { get; set; }  // Firebase UID for email authentication
+
+        [FirestoreProperty]
+        public bool EmailVerificado { get; set; } = false;  // Email verification status
     }
 }

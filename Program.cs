@@ -10,36 +10,8 @@ using Microsoft.OpenApi.Models;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSingleton<FirebaseService>();
+builder.Services.AddScoped<IEmailService, EmailService>();
 
-/*
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
-    {
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = "tu-issuer",  
-            ValidAudience = "tu-audience",  
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes("tu-clave-secreta"))  // Usar la misma clave secreta que al generar el JWT
-        };
-    });
-
-// Agregar política para permitir acceso anónimo a create_preference
-builder.Services.AddAuthorization(options =>
-{
-    options.AddPolicy("AllowMercadoPago", policy =>
-    {
-        policy.RequireAssertion(context =>
-            context.Resource is Microsoft.AspNetCore.Http.HttpContext httpContext &&
-            httpContext.Request.Path.StartsWithSegments("/api/mercadopago/create_preference")
-            || context.User.Identity != null && context.User.Identity.IsAuthenticated
-        );
-    });
-});
-*/
 
 builder.Services.AddCors(options =>
 {
@@ -66,7 +38,6 @@ builder.Services.AddSwaggerGen(c =>
 var app = builder.Build();
 
 
-
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -78,7 +49,7 @@ app.UseCors("AllowFrontend");
 
 app.UseHttpsRedirection();
 
-app.UseWhen(context => !context.Request.Path.StartsWithSegments("/api/mercadopago/create_preference"), appBuilder =>
+app.UseWhen(context => !context.Request.Path.StartsWithSegments("/api/paypal/create_order"), appBuilder =>
 {
     appBuilder.UseAuthentication();
     appBuilder.UseAuthorization();
