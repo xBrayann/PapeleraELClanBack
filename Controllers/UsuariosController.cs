@@ -25,6 +25,8 @@ namespace PapeleriaApi.Controllers
         private readonly IConfiguration _configuration;
         private readonly ILogger<UsuariosController> _logger;
         private readonly IEmailService _emailService;
+        private static readonly Dictionary<string, LoginAttempt> LoginAttempts = new();
+        private static readonly object LockObject = new();
 
         public UsuariosController(FirebaseService firebaseService, IConfiguration configuration, ILogger<UsuariosController> logger, IEmailService emailService)
         {
@@ -33,7 +35,6 @@ namespace PapeleriaApi.Controllers
             _logger = logger;
             _emailService = emailService;
 
-            // Initialize FirebaseApp if not already initialized
             if (FirebaseApp.DefaultInstance == null)
             {
                 var firebaseConfig = _configuration.GetSection("Firebase");
@@ -111,54 +112,6 @@ namespace PapeleriaApi.Controllers
             public string Telefono { get; set; } = string.Empty;
         }
 
-        [HttpPost("sendVerificationCode")]
-        public IActionResult SendVerificationCode([FromBody] PhoneRequest request)
-        {
-            try
-            {
-                var code = new Random().Next(100000, 999999).ToString();
-                VerificationStorage.Codes[request.Telefono] = code;
-                _logger.LogInformation("Código de verificación generado para: {Telefono} Código: {Code}", request.Telefono, code);
-                return Ok(new { message = "Código enviado" });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error al enviar código a: {Telefono}", request.Telefono);
-                return StatusCode(500, "Error interno del servidor.");
-            }
-        }
-
-        [HttpPost("verifyCode")]
-        public IActionResult VerifyCode([FromBody] VerifyCodeRequest request)
-        {
-            try
-            {
-                if (VerificationStorage.Codes.TryGetValue(request.Telefono, out var storedCode))
-                {
-                    if (storedCode == request.Codigo)
-                    {
-                        VerificationStorage.Codes.TryRemove(request.Telefono, out _);
-                        _logger.LogInformation("Código verificado para: {Telefono}", request.Telefono);
-                        return Ok("Código verificado");
-                    }
-                    else
-                    {
-                        _logger.LogWarning("Código inválido para: {Telefono}", request.Telefono);
-                        return BadRequest("Código inválido");
-                    }
-                }
-                else
-                {
-                    _logger.LogWarning("No se encontró código para: {Telefono}", request.Telefono);
-                    return BadRequest("Código no encontrado");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error al verificar código para: {Telefono}", request.Telefono);
-                return StatusCode(500, "Error interno del servidor.");
-            }
-        }
 
         [HttpPost("login")]
         public async Task<IActionResult> Login([FromBody] LoginRequest? request)
@@ -186,11 +139,42 @@ namespace PapeleriaApi.Controllers
                 return BadRequest(new { error = "Password is required", details = "Password field is empty" });
             }
 
-            // Validate email format
             if (!request.Email.Contains("@"))
             {
                 _logger.LogWarning("Invalid email format: {Email}", request.Email);
                 return BadRequest(new { error = "Invalid email format", details = "Email must contain @" });
+            }
+
+            // Get client IP address for tracking attempts
+            var clientIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            var attemptKey = $"{clientIp}:{request.Email.ToLower()}";
+
+            lock (LockObject)
+            {
+                // Clean up expired blocks
+                var expiredKeys = LoginAttempts.Where(kvp => 
+                    kvp.Value.BlockedUntil.HasValue && 
+                    kvp.Value.BlockedUntil.Value <= DateTime.Now).Select(kvp => kvp.Key).ToList();
+                
+                foreach (var key in expiredKeys)
+                {
+                    LoginAttempts.Remove(key);
+                }
+
+                if (LoginAttempts.TryGetValue(attemptKey, out var attempt))
+                {
+                    if (attempt.IsBlocked && attempt.BlockedUntil.HasValue && attempt.BlockedUntil.Value > DateTime.Now)
+                    {
+                        var remainingTime = attempt.BlockedUntil.Value - DateTime.Now;
+                        _logger.LogWarning("Login blocked for {Email} from {ClientIp}. Remaining time: {RemainingTime}s", 
+                            request.Email, clientIp, remainingTime.TotalSeconds);
+                        return StatusCode(429, new { 
+                            error = "Cuenta bloqueada", 
+                            details = $"Demasiados intentos fallidos. Por favor, intenta de nuevo en {Math.Ceiling(remainingTime.TotalSeconds)} segundos.",
+                            blockedUntil = attempt.BlockedUntil.Value
+                        });
+                    }
+                }
             }
 
             try
@@ -201,7 +185,8 @@ namespace PapeleriaApi.Controllers
                 if (usuario == null)
                 {
                     _logger.LogWarning("User not found for email: {Email}", request.Email);
-                    return Unauthorized(new { error = "Usuario no encontrado", details = "No user exists with this email" });
+                    await RecordFailedAttempt(attemptKey);
+                    return Unauthorized(new { error = "Credenciales incorrectas", details = "Usuario o contraseña incorrectos" });
                 }
 
                 _logger.LogInformation("User found: {UserId}, Email: {Email}, HasPassword: {HasPassword}", 
@@ -210,7 +195,8 @@ namespace PapeleriaApi.Controllers
                 if (string.IsNullOrEmpty(usuario.Contrasena))
                 {
                     _logger.LogError("User has no password hash stored: {Email}", request.Email);
-                    return Unauthorized(new { error = "Account configuration error", details = "Password not properly configured" });
+                    await RecordFailedAttempt(attemptKey);
+                    return Unauthorized(new { error = "Credenciales incorrectas", details = "Usuario o contraseña incorrectos" });
                 }
 
                 _logger.LogInformation("Attempting password verification...");
@@ -220,10 +206,10 @@ namespace PapeleriaApi.Controllers
                 if (!passwordValid)
                 {
                     _logger.LogWarning("Invalid password for user: {Email}", request.Email);
-                    return Unauthorized(new { error = "Credenciales inválidas", details = "Password does not match" });
+                    await RecordFailedAttempt(attemptKey);
+                    return Unauthorized(new { error = "Credenciales incorrectas", details = "Usuario o contraseña incorrectos" });
                 }
 
-                // Check if email is verified in Firebase
                 _logger.LogInformation("Checking email verification status for user: {Email}", request.Email);
                 try
                 {
@@ -243,6 +229,14 @@ namespace PapeleriaApi.Controllers
                     return Unauthorized(new { error = "Error al verificar estado del correo", details = ex.Message });
                 }
 
+                lock (LockObject)
+                {
+                    if (LoginAttempts.ContainsKey(attemptKey))
+                    {
+                        LoginAttempts.Remove(attemptKey);
+                    }
+                }
+
                 var token = GenerateJwtToken(usuario);
                 _logger.LogInformation("Login successful for verified user: {Email}", request.Email);
                 return Ok(new { 
@@ -260,6 +254,32 @@ namespace PapeleriaApi.Controllers
             }
         }
 
+        private async Task RecordFailedAttempt(string attemptKey)
+        {
+            await Task.Run(() =>
+            {
+                lock (LockObject)
+                {
+                    if (!LoginAttempts.TryGetValue(attemptKey, out var attempt))
+                    {
+                        attempt = new LoginAttempt();
+                        LoginAttempts[attemptKey] = attempt;
+                    }
+
+                    attempt.AttemptCount++;
+                    attempt.LastAttemptTime = DateTime.Now;
+
+                    if (attempt.AttemptCount >= 3)
+                    {
+                        attempt.IsBlocked = true;
+                        attempt.BlockedUntil = DateTime.Now.AddMinutes(1); // Cambiado a 1 minuto
+                        _logger.LogWarning("Account blocked for {AttemptKey} after {AttemptCount} failed attempts until {BlockedUntil}", 
+                            attemptKey, attempt.AttemptCount, attempt.BlockedUntil);
+                    }
+                }
+            });
+        }
+
         [HttpPost]
         public async Task<IActionResult> Post([FromBody] Usuario usuario)
         {
@@ -271,7 +291,6 @@ namespace PapeleriaApi.Controllers
 
             try
             {
-                // Verificar si el email ya existe (case-insensitive)
                 var normalizedEmail = usuario.Email?.ToLower().Trim();
                 var usuarioExistente = await _firebaseService.GetUsuarioByEmailAsync(normalizedEmail!);
                 if (usuarioExistente != null)
@@ -285,7 +304,7 @@ namespace PapeleriaApi.Controllers
                     });
                 }
 
-                // Crear usuario en Firebase Authentication
+
                 UserRecord userRecord;
                 try
                 {
@@ -320,7 +339,6 @@ namespace PapeleriaApi.Controllers
                     }
                 }
 
-                    // Generar enlace de verificación de email
                     try
                     {
                         var email = usuario.Email;
@@ -329,7 +347,7 @@ namespace PapeleriaApi.Controllers
                             var verificationLink = await FirebaseAuth.DefaultInstance.GenerateEmailVerificationLinkAsync(email);
                             _logger.LogInformation("Verification email generated for: {Email}", email);
 
-                            // Enviar el correo con el link
+                            
                             string subject = "Verifica tu correo - Papelería Web";
                             string body = $@"
 Hola {usuario.Nombre},
@@ -366,17 +384,13 @@ Equipo de Papelería Web";
                         _logger.LogWarning(ex, "Error al generar o enviar enlace de verificación para: {Email}", usuario.Email);
                     }
 
-                // Guardar usuario en Firestore
+
                 usuario.FirebaseUid = userRecord.Uid;
                 usuario.EmailVerificado = false;
                 usuario.Rol = usuario.Email == "admin@example.com" ? "admin" : "usuario";
-                
-                // No almacenar la contraseña en Firestore (ya está en Firebase Auth)
-                // usuario.Contrasena = null;
-                // Instead, hash the password for Firestore storage (for login verification)
+
                 usuario.Contrasena = BCrypt.Net.BCrypt.HashPassword(usuario.Contrasena);
 
-                // Ensure usuario.Id is set before saving
                 if (string.IsNullOrEmpty(usuario.Id))
                 {
                     usuario.Id = Guid.NewGuid().ToString();
@@ -460,7 +474,6 @@ Equipo de Papelería Web";
                 var userRecord = await FirebaseAuth.DefaultInstance.GetUserByEmailAsync(email);
                 var verificationLink = await FirebaseAuth.DefaultInstance.GenerateEmailVerificationLinkAsync(email);
 
-                // Enviar correo de verificación
                 var emailSent = await _emailService.SendVerificationEmailAsync(email, verificationLink);
                 
                 if (emailSent)
@@ -537,6 +550,22 @@ Equipo de Papelería Web";
     {
         public string Email { get; set; } = string.Empty;
         public string Contrasena { get; set; } = string.Empty;
+    }
+
+    public class LoginAttempt
+    {
+        public int AttemptCount { get; set; }
+        public DateTime LastAttemptTime { get; set; }
+        public bool IsBlocked { get; set; }
+        public DateTime? BlockedUntil { get; set; }
+
+        public LoginAttempt()
+        {
+            AttemptCount = 0;
+            LastAttemptTime = DateTime.MinValue;
+            IsBlocked = false;
+            BlockedUntil = null;
+        }
     }
 
     public static class VerificationStorage
